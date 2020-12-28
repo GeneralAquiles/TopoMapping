@@ -1,0 +1,34 @@
+https://vision.googleapis.com/v1/images:annotate
+
+{
+  "requests": [
+    {
+      "features": [
+        {
+          "maxResults": 50,
+          "type": "OBJECT_LOCALIZATION"
+        },
+        {
+          "maxResults": 50,
+          "type": "LABEL_DETECTION"
+        },
+        {
+          "maxResults": 50,
+          "type": "DOCUMENT_TEXT_DETECTION"
+        }
+      ],
+      "image": {
+        "content": "(data from __image__.jpg)"
+      },
+      "imageContext": {
+        "cropHintsParams": {
+          "aspectRatios": [
+            0.8,
+            1,
+            1.2
+          ]
+        }
+      }
+    }
+  ]
+}
