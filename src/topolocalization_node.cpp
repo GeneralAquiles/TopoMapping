@@ -68,6 +68,8 @@ class Room {
     void change_connection(int old_ID, int new_id);
     void add_new_estimation(topomapping::probability_array new_estimation);
     void calculate_room_name();
+    int  closest_point_id(waypoint new_point);
+    waypoint get_point(int point_id);
 };
 
 //#############Internal Variables##############
@@ -86,12 +88,12 @@ geometry_msgs::Quaternion actual_orientation;
 
 topomapping::probability_array probability;
 
-waypoint last_waypoint;
-waypoint last_detection;
+waypoint actual_waypoint;
 waypoint last_door_detection;
 
 int last_ID=0;
-int actual_room;
+int actual_room = -1;
+int actual_waypoint_id = -1;
 //#############################################
 
 char quaternion_to_orientation( geometry_msgs::Quaternion this_orientation){
@@ -132,7 +134,22 @@ int get_door_position(int door_id){
   return -1;
 }
 
-double get_closest_point(waypoint new_point, std::vector<waypoint> waypoints){
+int get_closest_door(){
+  double closest_dist = sqrt( pow(actual_position.x, 2) + pow(actual_position.y, 2) );
+
+  int position;
+  for(int i = 0; i<doors.size(); i++){
+    double dist = sqrt( pow(actual_position.x - doors[i].position.x, 2) + pow(actual_position.y - doors[i].position.y, 2) );
+    if (dist < closest_dist){
+      closest_dist = dist;
+      position = i;
+    } 
+  }
+
+  return position;
+}
+
+double get_closest_point_dist(waypoint new_point, std::vector<waypoint> waypoints){
 
   double closest_dist = sqrt( pow(new_point.position.x, 2) + pow(new_point.position.y, 2) );
 
@@ -157,13 +174,31 @@ int is_in_another_room(waypoint new_point){
     for (int i = 0; i < plant.size(); i++){
       if (plant[i].unique_id != actual_room){ //Avoids reading its own waypoints
         
-        double closest_point = get_closest_point(new_point, plant[i].waypoints);
+        double closest_point = get_closest_point_dist(new_point, plant[i].waypoints);
         if ( (closest_point < 0.9)  ) return plant[i].unique_id;
       }
     }
   }
 
   return -1;
+}
+
+int relocate_position(waypoint new_point){ 
+ 
+  double closest_dist;
+  double last_closest_dist = 99999;
+  int closest_room = -1;
+  for (int i = 0; i < plant.size(); i++){
+    if (plant[i].unique_id != actual_room){ //Avoids reading its own waypoints
+      
+      double closest_dist = get_closest_point_dist(new_point, plant[i].waypoints);
+      if ( (closest_dist < last_closest_dist)  ) {
+        last_closest_dist = closest_dist;
+        closest_room = plant[i].unique_id;
+      }
+    }
+  }
+  return closest_room;
 }
 
 bool is_oposite_direction(char current_dir, char last_dir){
@@ -262,7 +297,7 @@ void topo_map_print(){
 
     // POINTS markers use x and y scale for width/height respectively
     door_points.scale.x = 0.2;
-    door_points.scale.y = 0.2;
+    door_points.scale.y = 0.5;
     
     door_points.color.a = 1.0;
     door_points.color.r = 1.0;
@@ -307,33 +342,58 @@ void topo_map_print(){
         topo_pub.publish(room_names);
       }
     }
+
+    visualization_msgs::Marker robot;
+    robot.header.frame_id = "/map";
+    robot.header.stamp = ros::Time::now();
+    robot.ns = "points_and_lines";
+    robot.action = visualization_msgs::Marker::ADD;
+    robot.type = visualization_msgs::Marker::cube;
+    robot.scale.z = 0.5;
+    robot.scale.x = 0.3;
+    robot.id =  2*plant.size()+2;
+    robot.color.a = 1.0;
+    robot.color.r = 0.0;
+    robot.color.g = 1.0;
+    robot.color.b = 0.0;    
+    robot.pose.position = actual_waypoint.position;
+    robot.pose.position.z = 1;
+    topo_pub.publish(robot);
+
 }
 
-void door_manager(const std_msgs::Bool::ConstPtr& msg){
+void localize(const std_msgs::Bool::ConstPtr& msg){
   bool is_door = msg->data;
   waypoint new_point;
   new_point.is_door = is_door;
   new_point.position = actual_position;
   new_point.orientation = quaternion_to_orientation(actual_orientation);
   
+  if (actual_room == -1){
+    actual_room = relocate_position(new_point);
+    actual_waypoint_id = plant[get_room_position(actual_room)].room::closest_point_id(new_point);
+  }
+
   if ( (new_point.is_door) && ( (get_distance(new_point, last_door_detection) > 0.5) || (is_oposite_direction(new_point.orientation, last_door_detection.orientation)) ) ) {
     change_room();
     std::cout<<"\n\n\n\n Door crossed, changing to room "<< actual_room <<std::endl;
-    last_door_detection = new_point;
 
+    last_door_detection = new_point;
+    actual_waypoint = doors[get_closest_door];
+    actual_waypoint_id = actual_waypoint.unique_id;
     topo_map_print();
   }
-  else if (!new_point.is_door && (get_closest_point(new_point, plant[get_room_position(actual_room)].waypoints) > 1.2) )
+  else if (!new_point.is_door)
   {
-    // aqui se añaden los puntos a las habitaciones
-    int old_room = is_in_another_room(new_point);
-    if (old_room != -1){
-      actual_room = old_room;
-      last_detection = new_point;
-      std::cout << " [INFO]: Reassingning to room " << actual_room << std::endl;
-    }
-    else{
-      last_detection = new_point;
+    int posible_position_id = plant[get_room_position(actual_room)].room::closest_point_id(new_point);
+    waypoint posible_position =  plant[get_room_position(actual_room)].room::get_point(posible_position_id);
+
+
+    if (get_distance(new_point, posible_position) < 1.2) actual_waypoint_id = posible_position.unique_id;
+    else {
+      actual_room = relocate_position(new_point);
+      actual_waypoint_id = plant[get_room_position(actual_room)].room::closest_point_id(new_point);
+      actual_waypoint = plant[get_room_position(actual_room)].room::get_point(actual_waypoint_id);
     }
 
     topo_map_print();
@@ -366,3 +426,22 @@ int main (int argc, char **argv){
   return 0;
 } 
 
+int  room::closest_point_id(waypoint new_point){
+  double closest_dist = 99999;
+  int closest_point = -1;
+
+  for(int i = 0; i<waypoints.size(); i++){
+    double dist = sqrt( pow(new_point.position.x - waypoints[i].position.x, 2) + pow(new_point.position.y - waypoints[i].position.y, 2) );
+    if (dist < closest_dist){
+      closest_dist = dist;
+      closest_point = i;
+    } 
+  }
+  return waypoints[closest_point].unique_id;
+}
+
+waypoint room::get_point(int point_id){
+  for(int i = 0; i<waypoints.size(); i++){
+    if (waypoints[i].unique_id == point_id) return waypoints[i];
+  }
+}
